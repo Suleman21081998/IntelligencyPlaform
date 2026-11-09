@@ -42,15 +42,14 @@ def _arr(xs: list[str]) -> str:
     return "[" + ", ".join(_q(x) for x in xs) + "]"
 
 
-def generate_mock() -> int:
-    con = config.connect()
-    register_views(con)
-    _lookup_tables(con)
-    config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+def mock_select_sql() -> str:
+    """SELECT producing one synthetic profile per prospect domain.
+
+    Needs the ``exposures`` view and the lookup tables from signals._lookup_tables.
+    """
     pick = lambda arr, salt, p: (  # noqa: E731 - include each item with prob p%
-        f"list_filter({_arr(arr)}, x -> hash(domain || {_q(salt)} || x) % 100 < {p})")
-    sql = f"""
-    COPY (
+        f"list_filter({_arr(arr)}, lambda x: hash(domain || {_q(salt)} || x) % 100 < {p})")
+    return f"""
       WITH d AS (SELECT DISTINCT domain FROM ({candidate_exposures_sql()})),
       h AS (SELECT domain, hash(domain) AS h FROM d)
       SELECT
@@ -70,9 +69,16 @@ def generate_mock() -> int:
              ELSE CAST((h >> 40) % 720 AS INTEGER) END            AS days_since_funding,
         true                                                      AS is_synthetic
       FROM h
-    ) TO {_q(MOCK_PATH.as_posix())} (FORMAT parquet, COMPRESSION zstd)
     """
-    n = con.execute(sql).fetchone()[0]
+
+
+def generate_mock() -> int:
+    con = config.connect()
+    register_views(con)
+    _lookup_tables(con)
+    config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    n = con.execute(f"COPY ({mock_select_sql()}) TO {_q(MOCK_PATH.as_posix())} "
+                    "(FORMAT parquet, COMPRESSION zstd)").fetchone()[0]
     con.close()
     print(f"[firmographics] wrote {n:,} SYNTHETIC company profiles -> {MOCK_PATH}")
     return n

@@ -8,3 +8,7 @@ data/
 *.duckdb.wal
 *.parquet
 *.zst
+# demo snapshot is small and needed by the hosted app
+!demo_data/
+!demo_data/*.parquet
+!demo_data/*.zst

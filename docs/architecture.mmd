@@ -1,0 +1,54 @@
+flowchart TB
+    classDef src fill:#eef4ff,stroke:#3b6fd8,color:#0b1f4d
+    classDef step fill:#ffffff,stroke:#5b6474,color:#111
+    classDef store fill:#f2fbf4,stroke:#2f8a4c,color:#0d3319
+    classDef ui fill:#fff6e8,stroke:#c77700,color:#3d2600
+
+    subgraph S["① Inputs"]
+        RAW["Scan dump<br/>b2_download_file_by_id<br/>20 GB zstd · 137 GB NDJSON · 17M banners"]:::src
+        FIRMO["Company profiles<br/>data/firmographics*.parquet|json|csv<br/>(vendor feed or --mock)"]:::src
+        UP["Browser upload<br/>scan .json/.gz/.zst + optional profiles CSV"]:::src
+    end
+
+    subgraph I["② ingest.py — one streaming pass"]
+        FP{"Fingerprint<br/>size + mtime + schema<br/>changed?"}:::step
+        RJ["read_json(columns = 19 keys)<br/>skips banner / HTML / favicon<br/>parallel parse · ignore_errors"]:::step
+        FL["UNNEST(domains) → domain × IP × port<br/>derive tech · CVEs · max CVSS<br/>weak TLS · expired cert · is_ptr_only"]:::step
+        CP["COPY → Parquet (zstd)<br/>tmp file → atomic rename"]:::step
+    end
+
+    EXP[("warehouse/exposures.parquet<br/>14.7M rows · 343 MB")]:::store
+
+    subgraph G["③ signals.py"]
+        F1["Drop infra: cloud/CDN/ISP list,<br/>PTR-only hosts, >300 IPs, hosting names"]:::step
+        AS["attack_surface<br/>per domain: IPs, risky services,<br/>CVEs, EOL, TLS, tech seen"]:::step
+        CO["companies view<br/>normalised, typed defaults"]:::step
+        CS["company_signals<br/>FULL OUTER JOIN on domain<br/>missing tool categories · dev vs sec roles<br/>9 boolean sig_* flags"]:::step
+    end
+
+    subgraph R["④ scorer.py"]
+        PT["Points: attack 30 · tooling gap 20<br/>compliance 20 · hiring 15 · funding 15"]:::step
+        BR["score 0–100 · P1–P4<br/>buying_reasons[] · evidence_badges[]"]:::step
+    end
+
+    SC[("company_scores.parquet<br/>667k accounts · sorted by score")]:::store
+    DEMO[("demo_data/<br/>scores + top-account exposures<br/>~45 MB, in git")]:::store
+    PIPE["pipeline.py<br/>same SQL in a private<br/>per-upload work dir"]:::step
+
+    subgraph A["⑤ app.py — Streamlit"]
+        DS{"Data source<br/>Full · Demo · Upload"}:::ui
+        UI["Metrics bar · filter sidebar<br/>prospect table · account drawer<br/>cold-email draft"]:::ui
+    end
+
+    RAW --> FP
+    FP -- "unchanged" --> EXP
+    FP -- "new / --force" --> RJ --> FL --> CP --> EXP
+    EXP --> F1 --> AS --> CS
+    FIRMO --> CO --> CS
+    CS --> PT --> BR --> SC
+    SC -- "make_demo.py" --> DEMO
+    EXP -- "make_demo.py" --> DEMO
+    UP --> PIPE --> DS
+    SC --> DS
+    DEMO --> DS
+    DS --> UI

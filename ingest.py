@@ -169,11 +169,11 @@ def exposures_select(pattern: str, compression: str) -> str:
             -- tech fingerprint = HTTP components + banner product
             list_distinct(list_filter(
                 list_concat(COALESCE(json_keys(http.components), []), [product]),
-                x -> x IS NOT NULL))                 AS tech,
+                lambda x: x IS NOT NULL))                 AS tech,
             COALESCE(json_keys(vulns), [])           AS cves,
             list_max(list_transform(
                 map_values(TRY_CAST(vulns AS MAP(VARCHAR, STRUCT(cvss DOUBLE)))),
-                v -> v.cvss))                        AS max_cvss,
+                lambda v: v.cvss))                        AS max_cvss,
             list_has_any(COALESCE(ssl.versions, []), ['SSLv2','SSLv3','TLSv1','TLSv1.1'])
                                                      AS weak_tls,
             COALESCE(ssl.cert.expired, false)        AS cert_expired,
@@ -189,8 +189,8 @@ def exposures_select(pattern: str, compression: str) -> str:
         -- (ISP/hosting PTR records), i.e. the domain is not the IP's owner
         COALESCE(list_aggregate(
             list_transform(
-                list_filter(hostnames, h -> h = d OR ends_with(h, '.' || d)),
-                h -> regexp_matches(h, '{ip_like}') OR regexp_matches(h, '{ptr_prefix}')),
+                list_filter(hostnames, lambda h: h = d OR ends_with(h, '.' || d)),
+                lambda h: regexp_matches(h, '{ip_like}') OR regexp_matches(h, '{ptr_prefix}')),
             'bool_and'), false)                      AS is_ptr_only
     FROM b, UNNEST(domains) AS t(d)
     """
@@ -221,14 +221,23 @@ def register_firmographics(con: duckdb.DuckDBPyConnection, firmo_glob: str | Non
         cols = ", ".join(f"CAST(NULL AS {t}) AS {c}" for c, (t, _) in FIRMO_SCHEMA.items())
         con.execute(f"CREATE OR REPLACE VIEW companies AS SELECT {cols} WHERE false")
         return False
-    reader = (f"read_parquet({_sql_str(firmo_glob)}, union_by_name=true)"
-              if files[0].suffix == ".parquet"
-              else f"read_json_auto({_sql_str(firmo_glob)}, ignore_errors=true, union_by_name=true)")
+    suffix = files[0].suffix.lower()
+    if suffix == ".parquet":
+        reader = f"read_parquet({_sql_str(firmo_glob)}, union_by_name=true)"
+    elif suffix == ".csv":
+        # list columns in CSV are expected as ';'-separated strings
+        reader = f"read_csv_auto({_sql_str(firmo_glob)}, union_by_name=true, ignore_errors=true)"
+    else:
+        reader = f"read_json_auto({_sql_str(firmo_glob)}, ignore_errors=true, union_by_name=true)"
     con.execute(f"CREATE OR REPLACE VIEW raw_companies AS SELECT * FROM {reader}")
     present = {r[0] for r in con.execute("DESCRIBE raw_companies").fetchall()}
     exprs = []
+    col_types = {r[0]: r[1] for r in con.execute("DESCRIBE raw_companies").fetchall()}
     for col, (typ, default) in FIRMO_SCHEMA.items():
-        if col in present:
+        if col in present and typ == "VARCHAR[]" and col_types[col] == "VARCHAR":
+            # CSV-style "Okta;Splunk" -> ['Okta', 'Splunk']
+            exprs.append(f"COALESCE(list_transform(string_split({col}, ';'), lambda x: trim(x)), {default}) AS {col}")
+        elif col in present:
             exprs.append(f"COALESCE(TRY_CAST({col} AS {typ}), {default}) AS {col}")
         else:
             exprs.append(f"CAST({default} AS {typ}) AS {col}")

@@ -94,7 +94,7 @@ SELECT
         CASE WHEN sig_recent_funding THEN
             printf('Recent funding event %d days ago - new budget, investor security diligence',
                    days_since_funding) END
-    ], x -> x IS NOT NULL)                                                     AS buying_reasons,
+    ], lambda x: x IS NOT NULL)                                                     AS buying_reasons,
 
     -- short labels for table badges / filters
     list_filter([
@@ -108,7 +108,7 @@ SELECT
              WHEN is_regulated THEN 'Regulated' END,
         CASE WHEN sig_hiring_mismatch THEN 'Dev hiring, no security' END,
         CASE WHEN sig_recent_funding THEN 'Funded ' || days_since_funding || 'd ago' END
-    ], x -> x IS NOT NULL)                                                     AS evidence_badges,
+    ], lambda x: x IS NOT NULL)                                                     AS evidence_badges,
 
     pts_attack_surface, pts_tooling_gap, pts_compliance, pts_hiring, pts_funding,
     * EXCLUDE (company_id, name, industry, industry_source, employee_count, score,

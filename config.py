@@ -38,24 +38,48 @@ EXPOSURES_PARQUET: Final[Path] = WAREHOUSE_DIR / "exposures.parquet"
 SCORES_PARQUET: Final[Path] = WAREHOUSE_DIR / "company_scores.parquet"
 MANIFEST_PATH: Final[Path] = WAREHOUSE_DIR / "ingest_manifest.json"
 
+# Small, git-friendly snapshot of a full run (built by make_demo.py). The
+# hosted app falls back to it when warehouse/ is absent.
+DEMO_DIR: Final[Path] = ROOT / "demo_data"
+DEMO_SCORES: Final[Path] = DEMO_DIR / "company_scores.parquet"
+DEMO_EXPOSURES: Final[Path] = DEMO_DIR / "exposures_top.parquet"
+# Upload limits for the "Upload a scan file" mode of the dashboard.
+UPLOAD_ROOT: Final[Path] = Path(os.getenv("CI_UPLOAD_ROOT", WAREHOUSE_DIR / "uploads"))
+
 # ---------------------------------------------------------------------------
 # DuckDB resources
 # ---------------------------------------------------------------------------
-MEMORY_LIMIT: Final[str] = os.getenv("CI_MEMORY_LIMIT", "8GB")
+def _default_memory_limit() -> str:
+    """8GB, or 60% of physical RAM on smaller hosts (e.g. ~1 GB cloud containers)."""
+    try:
+        total_gb = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 1024**3
+    except (ValueError, OSError, AttributeError):
+        return "8GB"
+    return f"{max(0.25, min(8.0, round(total_gb * 0.6, 2)))}GB"
+
+
+MEMORY_LIMIT: Final[str] = os.getenv("CI_MEMORY_LIMIT", _default_memory_limit())
 THREADS: Final[int] = int(os.getenv("CI_THREADS", str(os.cpu_count() or 4)))
 # Largest single JSON line we accept (banners with big favicons/HTML).
 MAX_OBJECT_BYTES: Final[int] = int(os.getenv("CI_MAX_OBJECT_BYTES", str(64 * 1024 * 1024)))
 PARQUET_ROW_GROUP: Final[int] = 250_000
 
 
-def connect(read_only: bool = False, db_path: Path | None = None) -> duckdb.DuckDBPyConnection:
-    """Open the warehouse with the memory/spill settings applied."""
-    WAREHOUSE_DIR.mkdir(parents=True, exist_ok=True)
-    TEMP_DIR.mkdir(parents=True, exist_ok=True)
+def connect(read_only: bool = False, db_path: Path | str | None = None,
+            temp_dir: Path | None = None) -> duckdb.DuckDBPyConnection:
+    """Open a DuckDB database with the memory/spill settings applied.
+
+    ``db_path=':memory:'`` gives a throwaway in-memory database (used by the
+    upload pipeline); ``temp_dir`` overrides where large operators spill.
+    """
+    spill = temp_dir or TEMP_DIR
+    spill.mkdir(parents=True, exist_ok=True)
+    if db_path is None:
+        WAREHOUSE_DIR.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect(str(db_path or DB_PATH), read_only=read_only)
     con.execute(f"PRAGMA memory_limit='{MEMORY_LIMIT}'")
     con.execute(f"PRAGMA threads={THREADS}")
-    con.execute(f"PRAGMA temp_directory='{TEMP_DIR.as_posix()}'")
+    con.execute(f"PRAGMA temp_directory='{spill.as_posix()}'")
     # Streaming COPY does not need input order -> lets DuckDB flush early.
     con.execute("SET preserve_insertion_order=false")
     return con

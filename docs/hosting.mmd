@@ -1,0 +1,19 @@
+flowchart LR
+    classDef dev fill:#eef4ff,stroke:#3b6fd8,color:#0b1f4d
+    classDef cloud fill:#f2fbf4,stroke:#2f8a4c,color:#0d3319
+    classDef user fill:#fff6e8,stroke:#c77700,color:#3d2600
+
+    MAC["Your Mac<br/>ingest → scorer → make_demo.py"]:::dev
+    GH["GitHub repo<br/>code + demo_data/ (~45 MB)"]:::dev
+    SCC["Streamlit Community Cloud<br/>app.py · Demo snapshot + Upload mode"]:::cloud
+    DOCK["Any Docker host<br/>(Render / Railway / EC2)<br/>optional full warehouse volume"]:::cloud
+    TUN["Quick share: cloudflared tunnel<br/>→ localhost:8501 on your Mac"]:::cloud
+    INV["Invigilator's browser<br/>https://…streamlit.app"]:::user
+
+    MAC -- "git push" --> GH
+    GH -- "auto-deploy on push" --> SCC
+    GH -- "docker build" --> DOCK
+    MAC -. "temporary URL" .-> TUN
+    SCC --> INV
+    DOCK --> INV
+    TUN -.-> INV

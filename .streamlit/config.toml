@@ -1,0 +1,11 @@
+[server]
+# MB. Keep well below the host's RAM; the pipeline streams from disk but the
+# upload itself is buffered by Streamlit.
+maxUploadSize = 500
+headless = true
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+base = "light"

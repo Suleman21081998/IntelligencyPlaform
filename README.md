@@ -3,17 +3,18 @@
 Ranks companies by how likely they are to need a cybersecurity product *right now*,
 with a deterministic 0–100 score and a plain-English `buying_reasons` array for every account.
 
-```
-b2_download_file_by_id (20 GB zstd, 137 GB NDJSON, 17.0M scan banners)
-        │  ingest.py   — one streaming DuckDB pass, column-projected
-        ▼
-warehouse/exposures.parquet (343 MB, 14.7M domain×IP×port rows)      data/firmographics*.parquet
-        │  signals.py  — set-based SQL, spills to disk                      │ (vendor feed or --mock)
-        ▼                                                                   ▼
-attack_surface ───────────── FULL OUTER JOIN on registered domain ──── companies (normalised view)
-        ▼
-company_signals → scorer.py → warehouse/company_scores.parquet → app.py (Streamlit)
-```
+![Architecture and data flow](docs/architecture.png)
+
+*Diagram source: [`docs/architecture.mmd`](docs/architecture.mmd) (Mermaid). Re-render with
+`npx @mermaid-js/mermaid-cli -i docs/architecture.mmd -o docs/architecture.png -s 2`.*
+
+**Three ways data reaches the dashboard**
+
+| Data source | Produced by | Used for |
+|---|---|---|
+| Full dataset | `ingest.py` → `scorer.py` on the 20 GB dump (`warehouse/`) | local analysis, full detail |
+| Demo snapshot | `make_demo.py` (`demo_data/`, ~45 MB, committed to git) | hosted app |
+| Upload a scan file | `pipeline.py`, triggered from the browser | analysing any new scan file |
 
 ## 1. What the data actually is
 
@@ -40,7 +41,11 @@ The dashboard shows a warning banner while the firmographic half is synthetic.
 | `firmographics.py` | `--mock` generates deterministic synthetic profiles for every prospect domain; `--check` reports match rate of a real feed |
 | `signals.py` | Builds `attack_surface` and `company_signals` (boolean `sig_*` columns) |
 | `scorer.py` | Computes component points, `score`, `priority`, `buying_reasons`, `evidence_badges`; exports sorted Parquet |
-| `app.py` | Streamlit dashboard: metrics bar, filter sidebar, prospect table, account drawer, cold-email draft |
+| `app.py` | Streamlit dashboard: data-source picker (Full / Demo / Upload), metrics bar, filter sidebar, prospect table, account drawer, cold-email draft |
+| `pipeline.py` | Runs ingest → firmographics → signals → score on any file inside a private work dir (powers browser uploads; also a CLI) |
+| `make_demo.py` | Writes the git-friendly `demo_data/` snapshot used by the hosted app |
+| `Dockerfile`, `.streamlit/config.toml` | Container deployment and Streamlit server settings (upload limit) |
+| `docs/` | Architecture and hosting diagrams (Mermaid source + PNG) |
 
 ## 3. Signal methodology
 
@@ -130,15 +135,65 @@ Any JSON/Parquet with `company_id` = registered domain (e.g. `acme.com`). Missin
 typed defaults; extra columns are ignored. Remove/rename `data/firmographics_mock.parquet`, add
 the feed, then `python scorer.py --rebuild-signals`.
 
-### Deployment
-* **Single host / VM** (recommended): run the pipeline on a schedule (cron / Airflow) and serve
-  `streamlit run app.py --server.port 8501 --server.headless true` behind your SSO proxy.
-* **Container**: `python:3.11-slim` + `requirements.txt`; mount `warehouse/` read-only into the
-  app container. Only `company_scores.parquet` and `exposures.parquet` (~400 MB) are needed to
-  serve — the 20 GB raw file stays with the pipeline job.
+## 6. Uploading a file from the browser
 
-## 6. Responsible use
+Pick **Upload a scan file** in the sidebar.
+
+1. Upload newline-delimited JSON in the scan-banner format (plain, `.gz` or `.zst`; the
+   compression is detected from the extension or the file's magic bytes). A 5k-line sample can be
+   downloaded from the same page.
+2. Optionally upload a company-profiles file (CSV / JSON / Parquet keyed by `company_id` = domain;
+   in CSV, list columns such as `tech_stack` are `;`-separated). Without it, synthetic profiles are
+   generated so every signal still fires.
+3. Click **Run analysis**. `pipeline.run_pipeline()` saves the upload to
+   `warehouse/uploads/<random-id>/`, runs the *same* SQL as the CLI scripts against an in-memory
+   DuckDB (spilling to that folder), writes `exposures.parquet` + `company_scores.parquet` there and
+   deletes the raw upload. Progress is shown live; the dashboard then switches to the new results.
+4. Work dirs older than 24 h are cleaned up automatically. Each browser session gets its own
+   folder, so visitors never see each other's data.
+
+Upload size is capped by `server.maxUploadSize` in `.streamlit/config.toml` (500 MB). Streamlit
+buffers uploads in memory, so multi-GB dumps should go through the CLI (`python ingest.py`).
+The 5k sample runs end to end in under 1 s; the 200k-banner slice (353 MB) in about 2 s.
+
+## 7. Hosting and sharing a URL
+
+![Hosting options](docs/hosting.png)
+
+### Option A — Streamlit Community Cloud (free, permanent URL)
+1. Build the demo snapshot and push it:
+   ```bash
+   python make_demo.py              # writes demo_data/ (~45 MB)
+   git add . && git commit -m "Add upload mode, demo snapshot, diagrams" && git push
+   ```
+2. Go to <https://share.streamlit.io>, sign in with GitHub, **Create app** → pick
+   `IntelligencyPlaform`, branch `main`, main file `app.py`, Python 3.11 → **Deploy**.
+3. You get `https://<name>.streamlit.app`. In the app's **Settings → Sharing** you can restrict
+   viewers to specific email addresses (recommended — see *Responsible use*), then send the link.
+
+The hosted app shows **Demo snapshot** and **Upload a scan file**; the 20 GB dump never leaves your
+machine. Free-tier containers have limited RAM (about 1 GB at the time of writing), so
+`config.MEMORY_LIMIT` auto-sizes to 60% of available memory and uploads should stay small.
+
+### Option B — Docker on any host (Render, Railway, Fly.io, EC2, Cloud Run)
+```bash
+docker build -t intel-platform .
+docker run -p 8501:8501 intel-platform                                   # demo + upload
+docker run -p 8501:8501 -v "$PWD/warehouse:/app/warehouse" intel-platform  # + full dataset
+```
+Use this when you need more RAM, larger uploads, or the full dataset online.
+
+### Option C — Instant temporary link from your Mac
+```bash
+streamlit run app.py                      # terminal 1
+brew install cloudflared                  # once
+cloudflared tunnel --url http://localhost:8501   # terminal 2 → prints https://<random>.trycloudflare.com
+```
+The link works only while your Mac and both commands are running.
+
+## 8. Responsible use
 Scan data shows what is publicly visible, not confirmed vulnerabilities (CVE matches are
 version-based). The cold-email template deliberately describes risk *categories* and never
 includes IPs or CVE IDs; keep it that way, and route any genuinely critical finding through
-responsible-disclosure channels rather than a sales sequence.
+responsible-disclosure channels rather than a sales sequence. When hosting, restrict viewers: the dashboard lists named
+organisations alongside their observed exposures.

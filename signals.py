@@ -113,7 +113,7 @@ def build_company_signals(con: duckdb.DuckDBPyConnection) -> int:
     cat_cols = []
     for cat, words in config.SECURITY_TOOL_CATEGORIES.items():
         cat_cols.append(f"CASE WHEN NOT regexp_matches(stack_lc, {_regex(words)}) THEN {_q(cat)} END")
-    missing_expr = f"list_filter([{', '.join(cat_cols)}], x -> x IS NOT NULL)"
+    missing_expr = f"list_filter([{', '.join(cat_cols)}], lambda x: x IS NOT NULL)"
 
     comp_whens = " ".join(f"WHEN {_q(k)} THEN {_q(v)}" for k, v in config.COMPLIANCE_BY_INDUSTRY.items())
     high_risk = _varchar_list(config.HIGH_RISK_INDUSTRIES)
@@ -146,8 +146,8 @@ def build_company_signals(con: duckdb.DuckDBPyConnection) -> int:
                  WHEN inferred_industry IS NOT NULL THEN 'domain-inferred'
                  ELSE 'unknown' END                                        AS industry_source,
             lower(array_to_string(tech_stack, ' | '))                      AS stack_lc,
-            list_filter(hiring_signals, h -> regexp_matches(lower(h), {dev_re})) AS dev_roles,
-            list_filter(hiring_signals, h -> regexp_matches(lower(h), {sec_re})) AS sec_roles
+            list_filter(hiring_signals, lambda h: regexp_matches(lower(h), {dev_re})) AS dev_roles,
+            list_filter(hiring_signals, lambda h: regexp_matches(lower(h), {sec_re})) AS sec_roles
         FROM j
     )
     SELECT
